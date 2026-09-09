@@ -23,6 +23,7 @@ import type { NodeHostConfig } from "./types.node-host.js";
 import type { PluginsConfig } from "./types.plugins.js";
 import type { SecretsConfig } from "./types.secrets.js";
 import type { SkillsConfig } from "./types.skills.js";
+import type { TelemetryConfig } from "./types.telemetry.js";
 import type { ToolsConfig } from "./types.tools.js";
 import type { TtsConfig } from "./types.tts.js";
 import type { ProxyConfig } from "./zod-schema.proxy.js";
@@ -46,13 +47,12 @@ export type SecurityConfig = {
     suppressions?: SecurityAuditSuppression[];
   };
   /**
-   * Opt out of the transcript credential-safety prompt contract.
+   * Allow handling credentials supplied in a transcript (default: true).
    *
-   * Default false: agents are instructed never to solicit or echo credentials.
-   * Set true only on operator-owned deployments that accept credentials
-   * reaching transcripts, logs, and every transcript-derived store (memory
-   * index, promoted memory, prompt cache). Intended for hosts where no
-   * host-owned masked credential-entry surface is reachable.
+   * Set false to require masked entry and keep reusable secrets out of visible
+   * replies and tool arguments. This controls ordinary-agent prompt guidance,
+   * not transcript redaction or protected-store access. All authorized senders
+   * share the policy. Guided system-agent setup always requires protected entry.
    */
   allowCredentialsInTranscript?: boolean;
   installPolicy?: {
@@ -131,7 +131,6 @@ export type OpenClawConfig = {
     lastRunCommit?: string;
     lastRunCommand?: string;
     lastRunMode?: "local" | "remote";
-    localModelLeanAutoModel?: string;
     securityAcknowledgedAt?: string;
   };
   /** Diagnostics, tracing, and stability debugging settings. */
@@ -143,7 +142,7 @@ export type OpenClawConfig = {
   update?: {
     /** Update channel for git + npm installs ("stable", "extended-stable", "beta", or "dev"). */
     channel?: "stable" | "extended-stable" | "beta" | "dev";
-    /** Check for updates on gateway start (npm installs only). */
+    /** Check for updates on gateway start; disabling also prevents anonymous update pings. */
     checkOnStart?: boolean;
     /** Core auto-update policy for package installs. */
     auto?: {
@@ -151,17 +150,13 @@ export type OpenClawConfig = {
       enabled?: boolean;
     };
   };
+  /** Explicit operator consent for anonymous feature statistics in the daily update check. */
+  telemetry?: TelemetryConfig;
   /** Browser automation and browser plugin integration settings. */
   browser?: BrowserConfig;
   ui?: {
     /** Accent color for OpenClaw UI chrome (hex). */
     seamColor?: string;
-    assistant?: {
-      /** Assistant display name for UI surfaces. */
-      name?: string;
-      /** Assistant avatar (emoji, short text, or image URL/data URI). */
-      avatar?: string;
-    };
     /**
      * Operator display preferences. Canonical config home so agents can
      * change them through the approval gate and clients stay in sync; the
@@ -169,9 +164,23 @@ export type OpenClawConfig = {
      */
     prefs?: {
       /** Control UI theme. */
-      theme?: "claw" | "knot" | "dash" | "custom";
+      theme?:
+        | "claw"
+        | "knot"
+        | "dash"
+        | "absolutely"
+        | "tide"
+        | "beacon"
+        | "phosphor"
+        | "crt"
+        | "manuscript"
+        | "rose"
+        | "miami"
+        | "custom";
       /** Light/dark preference. */
       themeMode?: "light" | "dark" | "system";
+      /** User-selected Control UI accent color (#RRGGBB). */
+      accent?: string;
       /** BCP 47 UI locale, e.g. "en" or "pt-BR". */
       locale?: string;
       /** Show model thinking output in chat. */
@@ -202,6 +211,8 @@ export type OpenClawConfig = {
   nodeHost?: NodeHostConfig;
   /** Agent definitions, defaults, bindings, and runtime policy. */
   agents?: AgentsConfig;
+  /** Global root for new managed worktrees. Defaults to <state-dir>/worktrees; accepts ~. */
+  worktreeRoot?: string;
   /** Tool exposure, policy, web/media tools, exec, and code-mode settings. */
   tools?: ToolsConfig;
   /** Legacy/direct agent bindings used by runtime resolution. */

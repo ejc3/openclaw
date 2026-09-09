@@ -9,8 +9,15 @@ title: "Browser login"
 ## Manual login (recommended)
 
 When a site requires login, sign in manually in the host browser's `openclaw`
-profile. Do not give the model your credentials: automated logins often
+profile. Keep passwords and reusable credentials out of chat: automated logins often
 trigger anti-bot defenses and can lock the account.
+
+The shared [credential guidance](/gateway/configuration-reference#credential-transcript-safety)
+also applies to browser sign-in. Mandatory masked entry is opt-in through
+`security.allowCredentialsInTranscript: false`. The default omits that blanket
+restriction; it does not provide autofill, redact transcripts, or override model,
+workspace, tool, or service policies. Supported short-lived code and callback
+handoffs remain available in either mode.
 
 Use the host browser (manual login) for both reading (search/threads) and
 posting on X/Twitter and other bot-sensitive sites. Sandboxed browser sessions

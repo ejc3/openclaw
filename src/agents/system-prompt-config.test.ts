@@ -2,12 +2,9 @@
 // the canonical agent prompt facade.
 import { describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import {
-  SYSTEM_AGENT_ASSISTANT_SYSTEM_PROMPT,
-  SYSTEM_AGENT_SYSTEM_PROMPT,
-} from "../system-agent/assistant-prompts.js";
+import * as ttsSettings from "../tts/tts-settings.js";
 import { buildConfiguredAgentSystemPrompt } from "./system-prompt-config.js";
-import { TRANSCRIPT_CREDENTIAL_SAFETY_PROMPT } from "./transcript-credential-safety.js";
+import * as systemPrompt from "./system-prompt.js";
 
 vi.mock("../tts/tts-settings.js", () => ({
   buildTtsSystemPromptHint: vi.fn(() => undefined),
@@ -26,6 +23,108 @@ function buildPrompt(config: OpenClawConfig, agentId = "main", sessionKey?: stri
 }
 
 describe("buildConfiguredAgentSystemPrompt", () => {
+  it.each(["full", "minimal"] as const)(
+    "defaults to optional masking and refreshes cached %s prompts when policy changes",
+    (promptMode) => {
+      const config: OpenClawConfig = { security: {} };
+      const params = { config, workspaceDir: "/tmp/credential-policy", promptMode };
+      const initial = buildConfiguredAgentSystemPrompt(params);
+      expect(initial).not.toContain("Use host-owned masked credential entry");
+      expect(buildConfiguredAgentSystemPrompt({ ...params, config: undefined })).toBe(initial);
+      for (const allow of [true, false, true, false]) {
+        config.security = { allowCredentialsInTranscript: allow };
+        const prompt = buildConfiguredAgentSystemPrompt(params);
+        expect(prompt.includes("Use host-owned masked credential entry")).toBe(!allow);
+        expect(prompt).toContain("Never ask users to paste passwords or reusable credentials");
+        expect(prompt).toContain("user-provided short-lived one-time codes or OAuth callbacks");
+        if (allow) {
+          expect(prompt).toBe(initial);
+        }
+      }
+    },
+  );
+
+  it.each(["minimal", "none"] as const)(
+    "skips full-only preparation in %s mode and refreshes the next full prompt",
+    (promptMode) => {
+      const hint = vi
+        .spyOn(ttsSettings, "buildTtsSystemPromptHint")
+        .mockReturnValue("Fixture first voice guidance.");
+      const models = { "fixture/model": { alias: "Before" } };
+      const params = {
+        config: { agents: { defaults: { models } } },
+        workspaceDir: "/tmp/openclaw",
+        includeMemorySection: false,
+      };
+      try {
+        const full = buildConfiguredAgentSystemPrompt(params);
+        expect(full).toContain("- Before: fixture/model");
+        expect(full).toContain("Fixture first voice guidance.");
+        hint.mockClear();
+        const reduced = buildConfiguredAgentSystemPrompt({ ...params, promptMode });
+        expect(hint).not.toHaveBeenCalled();
+        expect(reduced).not.toContain("## Model Aliases");
+        expect(reduced).not.toContain("## Voice (TTS)");
+        expect(buildConfiguredAgentSystemPrompt(params)).toBe(full);
+
+        models["fixture/model"].alias = "After";
+        hint.mockReturnValue("Fixture current voice guidance.");
+        hint.mockClear();
+        expect(buildConfiguredAgentSystemPrompt({ ...params, promptMode })).toBe(reduced);
+        expect(hint).not.toHaveBeenCalled();
+        const refreshed = buildConfiguredAgentSystemPrompt(params);
+        expect(refreshed).toContain("- After: fixture/model");
+        expect(refreshed).not.toContain("- Before: fixture/model");
+        expect(refreshed).toContain("Fixture current voice guidance.");
+        expect(refreshed).not.toContain("Fixture first voice guidance.");
+      } finally {
+        hint.mockRestore();
+      }
+    },
+  );
+
+  it.each([
+    { name: "absent", config: undefined },
+    { name: "empty", config: {} },
+    {
+      name: "retired hash",
+      config: {
+        commands: { ownerDisplay: "hash", ownerDisplaySecret: "retired-secret" },
+      } as OpenClawConfig,
+    },
+    {
+      name: "retired raw",
+      config: {
+        commands: { ownerDisplay: "raw", ownerDisplaySecret: "retired-secret" },
+      } as OpenClawConfig,
+    },
+  ])("preserves owner display semantics with $name config", ({ config }) => {
+    const render = vi.spyOn(systemPrompt, "buildAgentSystemPrompt");
+    try {
+      const prompt = buildConfiguredAgentSystemPrompt({
+        config,
+        workspaceDir: "/tmp/openclaw",
+        ownerNumbers: ["owner-a"],
+        ownerDisplay: "hash",
+        ownerDisplaySecret: "caller-secret", // pragma: allowlist secret
+      });
+
+      expect(render).toHaveBeenCalledTimes(1);
+      const renderParams = render.mock.calls[0]?.[0];
+      expect(Object.hasOwn(renderParams ?? {}, "ownerDisplay")).toBe(true);
+      expect(Object.hasOwn(renderParams ?? {}, "ownerDisplaySecret")).toBe(true);
+      expect(renderParams?.ownerDisplay).toBe(config ? "raw" : "hash");
+      expect(renderParams?.ownerDisplaySecret).toBe(config ? undefined : "caller-secret");
+      expect(prompt).toMatch(
+        config
+          ? /Allowlisted senders: owner-a\. Allowlisted != owner\./
+          : /Allowlisted senders: [a-f0-9]{12}\. Allowlisted != owner\./,
+      );
+    } finally {
+      render.mockRestore();
+    }
+  });
+
   it.each([
     {
       name: "prefers delegation in the canonical main session",
@@ -132,45 +231,5 @@ describe("buildConfiguredAgentSystemPrompt", () => {
     });
 
     expect(prompt).toContain("## Delegation");
-  });
-
-  it("keeps the credential contract unless the operator opts out", () => {
-    expect(buildPrompt({})).toContain(TRANSCRIPT_CREDENTIAL_SAFETY_PROMPT);
-    expect(buildPrompt({ security: {} })).toContain(TRANSCRIPT_CREDENTIAL_SAFETY_PROMPT);
-    expect(buildPrompt({ security: { allowCredentialsInTranscript: false } })).toContain(
-      TRANSCRIPT_CREDENTIAL_SAFETY_PROMPT,
-    );
-  });
-
-  it("drops only the handling rules when the operator opts out", () => {
-    const prompt = buildPrompt({ security: { allowCredentialsInTranscript: true } });
-
-    expect(prompt).not.toContain(TRANSCRIPT_CREDENTIAL_SAFETY_PROMPT);
-    expect(prompt).not.toContain("Never echo or repeat credentials");
-    expect(prompt).not.toContain("Never place, put, or include credentials");
-    expect(prompt).toContain("Safety/oversight > completion");
-  });
-
-  it("never lets the opt-out remove the no-solicitation rule", () => {
-    // Soliciting a credential creates exposure that would not otherwise exist,
-    // and it reaches non-owner participants, so no config value removes it.
-    for (const config of [
-      {},
-      { security: {} },
-      { security: { allowCredentialsInTranscript: false } },
-      { security: { allowCredentialsInTranscript: true } },
-    ]) {
-      expect(buildPrompt(config)).toContain(
-        "never ask or request users to report, share, or provide",
-      );
-    }
-  });
-
-  it("keeps the credential contract in system-agent prompts regardless of the opt-out", () => {
-    // The system agent carries the contract in its own module-scope prompts, so
-    // the operator opt-out cannot reach it no matter how config is resolved.
-    for (const prompt of [SYSTEM_AGENT_SYSTEM_PROMPT, SYSTEM_AGENT_ASSISTANT_SYSTEM_PROMPT]) {
-      expect(prompt).toContain(TRANSCRIPT_CREDENTIAL_SAFETY_PROMPT);
-    }
   });
 });
